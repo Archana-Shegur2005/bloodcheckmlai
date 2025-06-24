@@ -3,44 +3,50 @@ from flask_cors import CORS
 import fitz  # PyMuPDF
 import re
 import joblib
-import numpy as np
+import pandas as pd
 
 app = Flask(__name__)
 CORS(app)
 
+# Load the trained model and label encoder
 model = joblib.load("universal_parameter_classifier.pkl")
-label_encoder = joblib.load("universal_label_encoder.pkl")
 
-reference_parameters = {
-    "Hemoglobin": r"[\d.]+",
-    "Platelet Count": r"[\d.,]+",
-    "WBC": r"[\d.,]+",
-    "RBC": r"[\d.,]+",
-    "PCV": r"[\d.]+",
-    "MCH": r"[\d.]+",
-    "MCV": r"[\d.]+",
-    "MCHC": r"[\d.]+",
-}
-
-@app.route("/extract", methods=["POST"])
-def extract_parameters():
-    file = request.files.get("file")
+@app.route('/extract', methods=['POST'])
+def extract():
+    file = request.files.get('file')
     if not file:
         return jsonify({"error": "No file uploaded"}), 400
 
     try:
-        # Use PyMuPDF to extract text from PDF
-        doc = fitz.open("pdf", file.read())
-        text = "\n".join([page.get_text() for page in doc])
-        print("📄 Extracted Text:\n", text)
+        # Step 1: Convert PDF to text using PyMuPDF
+        pdf = fitz.open(stream=file.read(), filetype="pdf")
+        text = ""
+        for page in pdf:
+            text += page.get_text()
 
-        lines = text.splitlines()
-        lines = [line.strip() for line in lines if line.strip()]
+        print("🔍 OCR Extracted Text:\n", text)
+
+        # Step 2: Split into lines and clean
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+        # Step 3: Define patterns for known parameters
+        parameters_to_find = {
+            "Hemoglobin": r"\d+\.?\d*",
+            "Platelet Count": r"\d+\.?\d*",
+            "WBC": r"\d+\.?\d*",
+            "RBC": r"\d+\.?\d*",
+            "PCV": r"\d+\.?\d*",
+            "MCH": r"\d+\.?\d*",
+            "MCV": r"\d+\.?\d*",
+            "MCHC": r"\d+\.?\d*",
+        }
+
         predictions = []
+        added_params = set()
 
         for idx, line in enumerate(lines):
-            for param, pattern in reference_parameters.items():
-                if param.lower() in line.lower():
+            for param, pattern in parameters_to_find.items():
+                if param.lower() in line.lower() and param not in added_params:
                     match = re.search(pattern, line)
                     value = None
                     if match:
@@ -51,31 +57,30 @@ def extract_parameters():
                             if match:
                                 value = match.group()
 
-                    try:
-                        if value:
-                            clean_value = float(value.replace(",", "").replace(" ", ""))
-                            # One-hot encode for model
-                            input_vector = np.zeros(len(model.feature_names_in_))
-                            for i, name in enumerate(model.feature_names_in_):
-                                if name == f"Parameter_{param}":
-                                    input_vector[i] = 1
-                                elif name == "Value":
-                                    input_vector[i] = clean_value
-                            pred = model.predict([input_vector])[0]
-                            status = label_encoder.inverse_transform([pred])[0]
+                    if value:
+                        clean_val = value.replace(",", "").replace(" ", "").strip()
+                        try:
+                            val_float = float(clean_val)
+                        except:
+                            continue  # skip invalid numbers like ',' or '.'
 
-                            predictions.append({
-                                "parameter": param,
-                                "value": str(clean_value),
-                                "status": status
-                            })
-                    except Exception as e:
-                        print(f"⚠️ Prediction failed for {param}: {e}")
+                        # ML Prediction
+                        try:
+                            features = pd.DataFrame([{
+                                "Parameter": param,
+                                "Value": val_float
+                            }])
+                            status = model.predict(features)[0]
+                        except Exception as e:
+                            print(f"Prediction failed for {param} with value {val_float}: {e}")
+                            status = "-"
+
                         predictions.append({
                             "parameter": param,
-                            "value": value if value else "-",
-                            "status": "-"
+                            "value": str(val_float),
+                            "status": status
                         })
+                        added_params.add(param)
 
         return jsonify({
             "status": "completed",
@@ -83,8 +88,9 @@ def extract_parameters():
         })
 
     except Exception as e:
-        print("❌ PDF processing error:", e)
+        print("Error:", e)
         return jsonify({"error": "Failed to process PDF"}), 500
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     app.run(debug=True)
