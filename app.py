@@ -6,35 +6,25 @@ import re
 import joblib
 import pandas as pd
 
-app = Flask(__name__)
-CORS(app)
-
-# Load ML model and label encoder
+# Load ML model and encoder
 model = joblib.load("universal_parameter_classifier.pkl")
 label_encoder = joblib.load("universal_label_encoder.pkl")
 
-# Define expected one-hot encoded parameter columns
-param_cols = ["Parameter_Hemoglobin", "Parameter_WBC", "Parameter_Platelet Count", "Parameter_RBC", "Parameter_PCV", "Parameter_MCH", "Parameter_MCV", "Parameter_MCHC"]
-
-@app.route('/', methods=['GET'])
-def home():
-    return "MediScan AI Backend is Running."
+# Flask app setup
+app = Flask(__name__)
+CORS(app)
 
 @app.route('/extract', methods=['POST'])
-def extract_pdf():
+def extract_from_pdf():
     file = request.files.get('file')
-    age = int(request.form.get("age", 25))
-    gender = request.form.get("gender", "F")
     if not file:
         return jsonify({"error": "No file uploaded"}), 400
 
     try:
         images = convert_from_bytes(file.read())
         text = "\n".join([pytesseract.image_to_string(img) for img in images])
-
-        lines = text.splitlines()
-        lines = [line.strip() for line in lines if line.strip()]
-
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        print("🔍 OCR Extracted Text:\n", text)
         parameters_to_find = {
             "Hemoglobin": r"[\d.]+",
             "Platelet Count": r"[\d.,]+",
@@ -46,7 +36,7 @@ def extract_pdf():
             "MCHC": r"[\d.]+",
         }
 
-        predictions = []
+        results = []
 
         for idx, line in enumerate(lines):
             for param, pattern in parameters_to_find.items():
@@ -55,37 +45,45 @@ def extract_pdf():
                     value = None
                     if match:
                         value = match.group()
-                    else:
-                        if idx + 1 < len(lines):
-                            match = re.search(pattern, lines[idx + 1])
-                            if match:
-                                value = match.group()
+                    elif idx + 1 < len(lines):
+                        match = re.search(pattern, lines[idx + 1])
+                        if match:
+                            value = match.group()
 
-                    if value:
-                        try:
-                            val = float(value.replace(",", ""))
-                            gender_enc = 1 if gender.upper() == "M" else 0
-                            param_vector = [1 if f"Parameter_{param}" == col else 0 for col in param_cols]
-                            input_data = [[val, age, gender_enc] + param_vector]
-                            prediction = model.predict(input_data)
-                            label = label_encoder.inverse_transform(prediction)[0]
-                        except Exception as e:
-                            label = "-"
+                    # Validate and parse value
+                    try:
+                        float_value = float(value.replace(",", ""))
+                    except:
+                        continue  # skip invalid
 
-                        predictions.append({
-                            "parameter": param,
-                            "value": value,
-                            "status": label
-                        })
+                    # Prepare features for prediction
+                    feature_row = pd.DataFrame({"Parameter": [param]})
+                    X = pd.get_dummies(feature_row)
+                    for col in model.feature_names_in_:
+                        if col not in X.columns:
+                            X[col] = 0
+                    X = X[model.feature_names_in_]
+                    X["Value"] = float_value
 
-        return jsonify({
-            "status": "completed",
-            "results": predictions
-        })
+                    # Predict
+                    try:
+                        pred_encoded = model.predict(X)[0]
+                        status = label_encoder.inverse_transform([pred_encoded])[0]
+                    except Exception as e:
+                        print(f"Prediction error for {param}:", e)
+                        status = "-"
+
+                    results.append({
+                        "parameter": param,
+                        "value": str(float_value),
+                        "status": status
+                    })
+
+        return jsonify({"status": "completed", "results": results})
 
     except Exception as e:
         print("Error:", e)
         return jsonify({"error": "Failed to process PDF"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
