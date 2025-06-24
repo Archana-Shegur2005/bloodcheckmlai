@@ -3,3 +3,7 @@ flask-cors
 joblib
 pandas
 scikit-learn
+gunicorn
+pytesseract
+pdf2image
+Pillow
