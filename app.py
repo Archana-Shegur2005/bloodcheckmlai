@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import re
 import fitz  # PyMuPDF
+import re
 import joblib
 import numpy as np
 
@@ -29,15 +29,13 @@ def extract_parameters():
         return jsonify({"error": "No file uploaded"}), 400
 
     try:
-        # Extract raw text from the uploaded PDF
-        pdf_data = file.read()
-        doc = fitz.open("pdf", pdf_data)
+        # Use PyMuPDF to extract text from PDF
+        doc = fitz.open("pdf", file.read())
         text = "\n".join([page.get_text() for page in doc])
-        print("🔍 PDF Text:\n", text)
+        print("📄 Extracted Text:\n", text)
 
         lines = text.splitlines()
         lines = [line.strip() for line in lines if line.strip()]
-
         predictions = []
 
         for idx, line in enumerate(lines):
@@ -56,17 +54,15 @@ def extract_parameters():
                     try:
                         if value:
                             clean_value = float(value.replace(",", "").replace(" ", ""))
-                            # Use ML model
-                            input_df = {f"Parameter_{param}": [1], "Value": [clean_value]}
-                            X = model.feature_names_in_
-                            vector = np.zeros(len(X))
-                            for i, name in enumerate(X):
+                            # One-hot encode for model
+                            input_vector = np.zeros(len(model.feature_names_in_))
+                            for i, name in enumerate(model.feature_names_in_):
                                 if name == f"Parameter_{param}":
-                                    vector[i] = 1
+                                    input_vector[i] = 1
                                 elif name == "Value":
-                                    vector[i] = clean_value
-                            prediction = model.predict([vector])[0]
-                            status = label_encoder.inverse_transform([prediction])[0]
+                                    input_vector[i] = clean_value
+                            pred = model.predict([input_vector])[0]
+                            status = label_encoder.inverse_transform([pred])[0]
 
                             predictions.append({
                                 "parameter": param,
@@ -74,7 +70,7 @@ def extract_parameters():
                                 "status": status
                             })
                     except Exception as e:
-                        print(f"Prediction failed for {param} with value {value}: {e}")
+                        print(f"⚠️ Prediction failed for {param}: {e}")
                         predictions.append({
                             "parameter": param,
                             "value": value if value else "-",
@@ -87,7 +83,7 @@ def extract_parameters():
         })
 
     except Exception as e:
-        print("Error:", e)
+        print("❌ PDF processing error:", e)
         return jsonify({"error": "Failed to process PDF"}), 500
 
 if __name__ == "__main__":
